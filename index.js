@@ -208,6 +208,27 @@ function isExtensionAllowed(filePath, allowed) {
 	return !(allowed.length > 0 && (!extension || extension === '.' || !allowed.includes(extension)));
 }
 
+// === 辅助函数：判断目标文件夹 ===
+function getTargetFolder(data) {
+	// 默认存入 posts/
+	let folder = 'posts/';
+
+	// 1. 如果是聊天 (chat)
+	if (data.folder === 'chat-images' || data.type === 'chat' || (data.params && data.params.type === 'chat')) {
+		folder = 'chat/';
+	} 
+	// 2. 如果是头像 (profile)
+	else if (data.folder === 'profile') {
+		folder = 'profile/';
+	} 
+	// 3. 其他系统级文件夹 (如果有)
+	else if (data.folder && data.folder !== 'files') {
+		folder = data.folder + '/';
+	}
+
+	return folder;
+}
+
 plugin.uploadImage = function (data, callback) {
 	const { image } = data;
 
@@ -225,6 +246,9 @@ plugin.uploadImage = function (data, callback) {
 	const type = image.url ? 'url' : 'file';
 	const allowed = fileModule.allowedExtensions();
 
+	// === 获取目标文件夹 ===
+	const subFolder = getTargetFolder(data);
+
 	if (type === 'file') {
 		if (!image.path) {
 			return callback(new Error('invalid image path'));
@@ -235,7 +259,8 @@ plugin.uploadImage = function (data, callback) {
 		}
 
 		fs.readFile(image.path, (err, buffer) => {
-			uploadToS3(image.name, err, buffer, callback);
+			// 将 subFolder 传给 uploadToS3
+			uploadToS3(image.name, err, buffer, subFolder, callback);
 		});
 	} else {
 		if (!isExtensionAllowed(image.url, allowed)) {
@@ -254,14 +279,13 @@ plugin.uploadImage = function (data, callback) {
 					return callback(makeError(err));
 				}
 
-				// This is sort of a hack - We"re going to stream the gm output to a buffer and then upload.
-				// See https://github.com/aws/aws-sdk-js/issues/94
 				let buf = Buffer.alloc(0);
 				stdout.on('data', (d) => {
 					buf = Buffer.concat([buf, d]);
 				});
 				stdout.on('end', () => {
-					uploadToS3(filename, null, buf, callback);
+					// 将 subFolder 传给 uploadToS3
+					uploadToS3(filename, null, buf, subFolder, callback);
 				});
 			});
 	}
@@ -289,12 +313,17 @@ plugin.uploadFile = function (data, callback) {
 		return callback(new Error(`[[error:invalid-file-type, ${allowed.join('&#44; ')}]]`));
 	}
 
+	// === 获取目标文件夹 ===
+	const subFolder = getTargetFolder(data);
+
 	fs.readFile(file.path, (err, buffer) => {
-		uploadToS3(file.name, err, buffer, callback);
+		// 将 subFolder 传给 uploadToS3
+		uploadToS3(file.name, err, buffer, subFolder, callback);
 	});
 };
 
-async function uploadToS3(filename, err, buffer, callback) {
+// === 修改：增加了 subFolder 参数 ===
+async function uploadToS3(filename, err, buffer, subFolder, callback) {
 	if (err) {
 		return callback(makeError(err));
 	}
@@ -308,10 +337,12 @@ async function uploadToS3(filename, err, buffer, callback) {
 			s3Path += '/';
 		}
 	} else {
-		s3Path = '/';
+		s3Path = ''; // 默认为空，不使用根目录斜杠
 	}
 
-	const s3KeyPath = s3Path.replace(/^\//, ''); // S3 Key Path should not start with slash.
+	// 组合路径: 用户设置的根目录 + 自动判断的子目录 (posts/ 或 chat/)
+	// replace(/^\//, '') 是为了去掉开头的斜杠，防止 key 变成 //posts/...
+	const s3KeyPath = (s3Path + subFolder).replace(/^\//, ''); 
 
 	const params = {
 		Bucket: settings.bucket,
